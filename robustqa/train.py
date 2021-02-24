@@ -257,6 +257,10 @@ def main():
 
     util.set_seed(args.seed)
     model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
+
+    if args.load_dir:
+      model = DistilBertForQuestionAnswering.from_pretrained(args.load_dir)
+
     tokenizer = DistilBertTokenizerFast.from_pretrained('distilbert-base-uncased')
 
     if args.do_train:

@@ -142,9 +142,6 @@ class AuxMLMModel(DistilBertPreTrainedModel):
             qa_end_loss = loss_fct(end_logits, end_positions)
             qa_loss = (qa_start_loss + qa_end_loss) / 2
 
-        output = (start_logits, end_logits) + distilbert_output[1:]
-        return ((total_loss,) + output) if total_loss is not None else output
-
         # Compute Cross-Entropy Loss from MLM
         mlm_loss = None
         if mlm_labels is not None:

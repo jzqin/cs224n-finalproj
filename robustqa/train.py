@@ -210,13 +210,10 @@ class Trainer():
                     optim.zero_grad()
                     model.train()
 
-                    batrandom.choices(0, len(batch['input_ids']))
-                    # try a random sample of inputs
-                    input
-                    #input_ids = batch['input_ids'].to(device)
-                    #attention_mask = batch['attention_mask'].to(device)
-                    #start_positions = batch['start_positions'].to(device)
-                    #end_positions = batch['end_positions'].to(device)
+                    input_ids = batch['input_ids'].to(device)
+                    attention_mask = batch['attention_mask'].to(device)
+                    start_positions = batch['start_positions'].to(device)
+                    end_positions = batch['end_positions'].to(device)
                     outputs = model(input_ids, attention_mask=attention_mask,
                                     start_positions=start_positions,
                                     end_positions=end_positions)

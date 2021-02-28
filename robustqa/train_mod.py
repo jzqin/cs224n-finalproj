@@ -4,10 +4,11 @@ import os
 from collections import OrderedDict
 import torch
 import csv
-import random
+import random # added for masking
 import util
 from transformers import DistilBertTokenizerFast
 from transformers import DistilBertForQuestionAnswering
+from transformers import DistilBertForMaskedLM
 from transformers import AdamW
 from tensorboardX import SummaryWriter
 
@@ -17,6 +18,7 @@ from torch.utils.data.sampler import RandomSampler, SequentialSampler
 from args import get_train_test_args
 
 from tqdm import tqdm
+
 
 def prepare_eval_data(dataset_dict, tokenizer):
     tokenized_examples = tokenizer(dataset_dict['question'],
@@ -49,8 +51,6 @@ def prepare_eval_data(dataset_dict, tokenizer):
 
     return tokenized_examples
 
-
-
 def prepare_train_data(dataset_dict, tokenizer):
     tokenized_examples = tokenizer(dataset_dict['question'],
                                    dataset_dict['context'],
@@ -60,43 +60,51 @@ def prepare_train_data(dataset_dict, tokenizer):
                                    return_overflowing_tokens=True,
                                    return_offsets_mapping=True,
                                    padding='max_length')
-    sample_mapping = tokenized_examples["overflow_to_sample_mapping"]
-    offset_mapping = tokenized_examples["offset_mapping"]
+    sample_mapping = tokenized_examples["overflow_to_sample_mapping"] # (???)
+    offset_mapping = tokenized_examples["offset_mapping"]             # (???)
 
     # Let's label those examples!
     tokenized_examples["start_positions"] = []
     tokenized_examples["end_positions"] = []
     tokenized_examples['id'] = []
     inaccurate = 0
+
     for i, offsets in enumerate(tqdm(offset_mapping)):
+        # i refers to the sequence of the index
+        # offsets is a pair of (start char, end char)
+
         # We will label impossible answers with the index of the CLS token.
-        input_ids = tokenized_examples["input_ids"][i]
-        cls_index = input_ids.index(tokenizer.cls_token_id)
+        input_ids = tokenized_examples["input_ids"][i]       # list of token ids (in vocabulary) from ith sequence in batch
+        cls_index = input_ids.index(tokenizer.cls_token_id)  # index of cls in the sequence
 
         # Grab the sequence corresponding to that example (to know what is the context and what is the question).
-        sequence_ids = tokenized_examples.sequence_ids(i)
+        sequence_ids = tokenized_examples.sequence_ids(i) # Gives 0 if token is in question, 1 if in context
 
         # One example can give several spans, this is the index of the example containing this span of text.
-        sample_index = sample_mapping[i]
-        answer = dataset_dict['answer'][sample_index]
+        sample_index = sample_mapping[i]                  # get index of the example in the dataset_dict
+        answer = dataset_dict['answer'][sample_index]     # grab answer for this example
+
         # Start/end character index of the answer in the text.
-        start_char = answer['answer_start'][0]
+        start_char = answer['answer_start'][0]                              
         end_char = start_char + len(answer['text'][0])
-        tokenized_examples['id'].append(dataset_dict['id'][sample_index])
+        tokenized_examples['id'].append(dataset_dict['id'][sample_index]) # add id of example to mapping
+
         # Start token index of the current span in the text.
         token_start_index = 0
         while sequence_ids[token_start_index] != 1:
-            token_start_index += 1
+            token_start_index += 1 # increment start index until we reach the context
 
         # End token index of the current span in the text.
         token_end_index = len(input_ids) - 1
         while sequence_ids[token_end_index] != 1:
-            token_end_index -= 1
+            token_end_index -= 1 # decrement end index until we reach the context
 
         # Detect if the answer is out of the span (in which case this feature is labeled with the CLS index).
+        # (for example, end_char of answer could be in the second chunk and start_char in the first chunk) 
         if not (offsets[token_start_index][0] <= start_char and offsets[token_end_index][1] >= end_char):
             tokenized_examples["start_positions"].append(cls_index)
             tokenized_examples["end_positions"].append(cls_index)
+
         else:
             # Otherwise move the token_start_index and token_end_index to the two ends of the answer.
             # Note: we could go after the last offset if the answer is the last word (edge case).
@@ -106,6 +114,7 @@ def prepare_train_data(dataset_dict, tokenizer):
             while offsets[token_end_index][1] >= end_char:
                 token_end_index -= 1
             tokenized_examples["end_positions"].append(token_end_index + 1)
+
             # assertion to check if this checks out
             context = dataset_dict['context'][sample_index]
             offset_st = offsets[tokenized_examples['start_positions'][-1]][0]
@@ -136,7 +145,7 @@ def read_and_process(args, tokenizer, dataset_dict, dir_name, dataset_name, spli
 
 #TODO: use a logger, use tensorboard
 class Trainer():
-    def __init__(self, args, log):
+    def __init__(self, args, log, mask_token_id):
         self.lr = args.lr
         self.num_epochs = args.num_epochs
         self.device = args.device
@@ -145,12 +154,53 @@ class Trainer():
         self.num_visuals = args.num_visuals
         self.save_dir = args.save_dir
         self.log = log
+        self.mask_token_id = mask_token_id # added for MLM loss
         self.visualize_predictions = args.visualize_predictions
         if not os.path.exists(self.path):
             os.makedirs(self.path)
 
+    # Synchronous masking for MLM task
+    def mlm_mask(self, input_ids):
+        random.seed(0)
+        #15% of input tokens changed to something else.
+        #80% of these tokens are changed to [MASK] (focus on this first)
+        for i in range(len(input_ids)):
+            rand1 = random.random()
+            if (rand1 > 0.85):
+                rand2 = random.random()
+                if (rand2 > 0.2):
+                    input_ids[i] = self.mask_token_id
+                #TODO - 10% of tokens changed to random other word
+                #TODO - 10% of tokens remain the same
+        return input_ids
+
     def save(self, model):
         model.save_pretrained(self.path)
+
+    def evaluate_mlm(self, model, data_loader, data_dict, return_preds=False, split='validation'):
+        device = self.device
+
+        model.eval()
+        pred_dict = {}
+        all_logits = []
+        with torch.no_grad(), \
+                tqdm(total=len(data_loader.dataset)) as progress_bar:
+            for batch in data_loader:
+                # Setup for forward (MLM)
+                labels = batch['input_ids'].to(device)
+                input_ids = self.mlm_mask(labels[:])
+                attention_mask = batch['attention_mask'].to(device)
+                batch_size = len(input_ids)
+                outputs = model(input_ids, labels=labels, attention_mask=attention_mask)
+
+                # Forward
+                logits = outputs.logits
+                # TODO: compute loss
+
+                all_logits.append(logits)
+                # TODO: use all_logits
+                progress_bar.update(batch_size)
+
 
     def evaluate(self, model, data_loader, data_dict, return_preds=False, split='validation'):
         device = self.device
@@ -159,10 +209,11 @@ class Trainer():
         pred_dict = {}
         all_start_logits = []
         all_end_logits = []
+
         with torch.no_grad(), \
                 tqdm(total=len(data_loader.dataset)) as progress_bar:
             for batch in data_loader:
-                # Setup for forward
+                # Setup for forward (QA)
                 input_ids = batch['input_ids'].to(device)
                 attention_mask = batch['attention_mask'].to(device)
                 batch_size = len(input_ids)
@@ -193,7 +244,38 @@ class Trainer():
             return preds, results
         return results
 
-    def train(self, model, train_dataloader, eval_dataloader, val_dict):
+    def train_mlm(self, model, train_dataloader, eval_dataloader, val_dict):
+        device = self.device
+        model.to(device)
+        optim = AdamW(model.parameters(), lr=self.lr)
+        global_idx = 0
+        tbx = SummaryWriter(self.save_dir)
+
+        with torch.enable_grad(), tqdm(total=len(train_dataloader.dataset)) as progress_bar:
+            for batch in train_dataloader:
+                optim.zero_grad()
+                model.train()
+
+                labels = batch['input_ids'].to(device)
+                input_ids = self.mlm_mask(labels[:])
+
+                attention_mask = batch['attention_mask'].to(device)
+                outputs = model(input_ids, labels = labels, attention_mask=attention_mask)
+                loss = outputs[0]
+
+                loss.backward()
+                optim.step()
+                progress_bar.update(len(input_ids))
+                progress_bar.set_postfix(epoch=0, NLL=loss.item())
+                tbx.add_scalar('train/NLL', loss.item(), global_idx)
+
+                # TODO - evaluate
+                global_idx += 1
+
+        self.save(model)
+
+
+    def train_qa(self, model, train_dataloader, eval_dataloader, val_dict):
         device = self.device
         model.to(device)
         optim = AdamW(model.parameters(), lr=self.lr)
@@ -201,22 +283,16 @@ class Trainer():
         best_scores = {'F1': -1.0, 'EM': -1.0}
         tbx = SummaryWriter(self.save_dir)
 
-        train_dataloader = random.choices
-
         for epoch_num in range(self.num_epochs):
             self.log.info(f'Epoch: {epoch_num}')
             with torch.enable_grad(), tqdm(total=len(train_dataloader.dataset)) as progress_bar:
                 for batch in train_dataloader:
                     optim.zero_grad()
                     model.train()
-
-                    batrandom.choices(0, len(batch['input_ids']))
-                    # try a random sample of inputs
-                    input
-                    #input_ids = batch['input_ids'].to(device)
-                    #attention_mask = batch['attention_mask'].to(device)
-                    #start_positions = batch['start_positions'].to(device)
-                    #end_positions = batch['end_positions'].to(device)
+                    input_ids = batch['input_ids'].to(device)
+                    attention_mask = batch['attention_mask'].to(device)
+                    start_positions = batch['start_positions'].to(device)
+                    end_positions = batch['end_positions'].to(device)
                     outputs = model(input_ids, attention_mask=attention_mask,
                                     start_positions=start_positions,
                                     end_positions=end_positions)
@@ -226,7 +302,10 @@ class Trainer():
                     progress_bar.update(len(input_ids))
                     progress_bar.set_postfix(epoch=epoch_num, NLL=loss.item())
                     tbx.add_scalar('train/NLL', loss.item(), global_idx)
+
+
                     if (global_idx % self.eval_every) == 0:
+
                         self.log.info(f'Evaluating at step {global_idx}...')
                         preds, curr_score = self.evaluate(model, eval_dataloader, val_dict, return_preds=True)
                         results_str = ', '.join(f'{k}: {v:05.2f}' for k, v in curr_score.items())
@@ -241,9 +320,12 @@ class Trainer():
                                            step=global_idx,
                                            split='val',
                                            num_visuals=self.num_visuals)
+
+                        # only save when we evaluate and the F1 score is higher than current best 
                         if curr_score['F1'] >= best_scores['F1']:
                             best_scores = curr_score
                             self.save(model)
+
                     global_idx += 1
         return best_scores
 
@@ -263,10 +345,11 @@ def main():
     args = get_train_test_args()
 
     util.set_seed(args.seed)
-    model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
+
+    model = DistilBertForMaskedLM.from_pretrained("distilbert-base-uncased")
 
     if args.load_dir:
-      model = DistilBertForQuestionAnswering.from_pretrained(args.load_dir)
+      model = DistilBertForMaskedLM.from_pretrained(args.load_dir)
 
     tokenizer = DistilBertTokenizerFast.from_pretrained('distilbert-base-uncased')
 
@@ -278,7 +361,7 @@ def main():
         log.info(f'Args: {json.dumps(vars(args), indent=4, sort_keys=True)}')
         log.info("Preparing Training Data...")
         args.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-        trainer = Trainer(args, log)
+        trainer = Trainer(args, log, tokenizer.mask_token_id)
         train_dataset, _ = get_dataset(args, args.train_datasets, args.train_dir, tokenizer, 'train')
         log.info("Preparing Validation Data...")
         val_dataset, val_dict = get_dataset(args, args.train_datasets, args.val_dir, tokenizer, 'val')
@@ -288,12 +371,19 @@ def main():
         val_loader = DataLoader(val_dataset,
                                 batch_size=args.batch_size,
                                 sampler=SequentialSampler(val_dataset))
-        best_scores = trainer.train(model, train_loader, val_loader, val_dict)
+
+        # train on MLM task for 1 epoch
+        trainer.train_mlm(model, train_loader, val_loader, val_dict)
+
+        # now train on QA task for given number of epochs
+        model_qa = DistilBertForQuestionAnswering.from_pretrained(args.save_dir + "/checkpoint")
+        best_scores = trainer.train_qa(model_qa, train_loader, val_loader, val_dict)
+
     if args.do_eval:
         args.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
         split_name = 'test' if 'test' in args.eval_dir else 'validation'
         log = util.get_logger(args.save_dir, f'log_{split_name}')
-        trainer = Trainer(args, log)
+        trainer = Trainer(args, log, tokenizer.mask_token_id)
         checkpoint_path = os.path.join(args.save_dir, 'checkpoint')
         model = DistilBertForQuestionAnswering.from_pretrained(checkpoint_path)
         model.to(args.device)
@@ -306,6 +396,7 @@ def main():
                                                    split=split_name)
         results_str = ', '.join(f'{k}: {v:05.2f}' for k, v in eval_scores.items())
         log.info(f'Eval {results_str}')
+
         # Write submission file
         sub_path = os.path.join(args.save_dir, split_name + '_' + args.sub_file)
         log.info(f'Writing submission file to {sub_path}...')

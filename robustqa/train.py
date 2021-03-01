@@ -166,9 +166,15 @@ class Trainer():
                 input_ids = batch['input_ids'].to(device)
                 attention_mask = batch['attention_mask'].to(device)
                 batch_size = len(input_ids)
-                outputs = model(input_ids, attention_mask=attention_mask)
-                # Forward
-                start_logits, end_logits = outputs.start_logits, outputs.end_logits
+                outputs = model(input_ids, attention_mask=attention_mask, return_dict = False)
+
+                # Models are set to not return a dict, since we have not implemented this for AuxMLM
+                if (len(outputs) > 2):
+                    start_logits, end_logits = outputs[1], outputs[2]
+                else:
+                    start_logits, end_logits = outputs[0], outputs[1] # when no loss can be computed
+
+                #start_logits, end_logits = outputs.start_logits, outputs.end_logits
                 # TODO: compute loss
 
                 all_start_logits.append(start_logits)
@@ -193,16 +199,6 @@ class Trainer():
             return preds, results
         return results
 
-    # function to generate range of gammas (will want to experiment with different schemes)
-    def get_gammas(self, gamma_start, gamma_end, n_steps, scheme):
-        # probably want to make a new class for gamma generation
-
-        # linear case
-        if scheme == "linear":
-            return np.arange(gamma_start, gamma_end, (gamma_end - gamma_start) / n_steps)
-
-        else:
-            return [0.0] * n_steps # default to no MLM loss
 
     def train(self, model, train_dataloader, eval_dataloader, val_dict):
         device = self.device
@@ -212,21 +208,10 @@ class Trainer():
         best_scores = {'F1': -1.0, 'EM': -1.0}
         tbx = SummaryWriter(self.save_dir)
 
-        gamma_start = 0.5 # hard-code for now
-        gamma_end   = 0.1
-        n_steps = self.num_epochs * len(train_dataloader) # is this the correct number of batches per epoch?  
-        gammas  = self.get_gammas(gamma_start, gamma_end, n_steps, "linear")
-
         for epoch_num in range(self.num_epochs):
             self.log.info(f'Epoch: {epoch_num}')
             with torch.enable_grad(), tqdm(total=len(train_dataloader.dataset)) as progress_bar:
                 for batch in train_dataloader:
-
-                    # check that global_idx does not exceed size of gammas
-                    if global_idx > len(gammas) - 1:
-                        gamma_current = gamma_end
-                    else:
-                        gamma_current = gammas[global_idx]
 
                     optim.zero_grad()
                     model.train()
@@ -234,9 +219,11 @@ class Trainer():
                     attention_mask = batch['attention_mask'].to(device)
                     start_positions = batch['start_positions'].to(device)
                     end_positions = batch['end_positions'].to(device)
+
                     outputs = model(input_ids, attention_mask=attention_mask,
                                     start_positions=start_positions,
-                                    end_positions=end_positions, gamma = gamma_current)
+                                    end_positions=end_positions)
+
                     loss = outputs[0]
                     loss.backward()
                     optim.step()
@@ -275,6 +262,17 @@ def get_dataset(args, datasets, data_dir, tokenizer, split_name):
     data_encodings = read_and_process(args, tokenizer, dataset_dict, data_dir, dataset_name, split_name)
     return util.QADataset(data_encodings, train=(split_name=='train')), dataset_dict
 
+# function to generate range of gammas (will want to experiment with different schemes)
+def get_gammas(gamma_start, gamma_end, n_steps, scheme):
+    # probably want to make a new class for gamma generation
+
+    # linear case
+    if scheme == "linear":
+        return np.arange(gamma_start, gamma_end, (gamma_end - gamma_start) / n_steps)
+
+    else:
+        return [0.0] * n_steps # default to no MLM loss
+
 def main():
     # define parser and arguments
     args = get_train_test_args()
@@ -290,10 +288,10 @@ def main():
         model = AuxMLMModel.from_pretrained('distilbert-base-uncased')
         model.set_mask_token(tokenizer.mask_token_id)
         model.add_vocab_size(vocab_size)
-        assert(model.mlm_probability == 0.15)
+        assert model.mlm_probability == 0.15
     else:
         raise ValueError('--model parameter must be one of the following:{"bert", "auxmlm"}')
-    
+
     if args.load_dir:
         if args.model == 'bert':
             model = DistilBertForQuestionAnswering.from_pretrained(args.load_dir)
@@ -301,10 +299,11 @@ def main():
             model = AuxMLMModel.from_pretrained(args.load_dir)
             model.set_mask_token(tokenizer.mask_token_id)
             model.add_vocab_size(vocab_size)
-            
+
     if args.do_train:
         if not os.path.exists(args.save_dir):
             os.makedirs(args.save_dir)
+
         args.save_dir = util.get_save_dir(args.save_dir, args.run_name)
         log = util.get_logger(args.save_dir, 'log_train')
         log.info(f'Args: {json.dumps(vars(args), indent=4, sort_keys=True)}')
@@ -320,7 +319,16 @@ def main():
         val_loader = DataLoader(val_dataset,
                                 batch_size=args.batch_size,
                                 sampler=SequentialSampler(val_dataset))
+
+        if args.model == 'auxmlm':
+            gamma_start = 0.5 # hard-code for now
+            gamma_end   = 0.1
+            n_steps = args.num_epochs * len(train_loader) # is this the correct number of batches per epoch?
+            gammas  = get_gammas(gamma_start, gamma_end, n_steps, "linear")
+            model.set_gammas(gammas)
+
         best_scores = trainer.train(model, train_loader, val_loader, val_dict)
+
     if args.do_eval:
         args.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
         split_name = 'test' if 'test' in args.eval_dir else 'validation'

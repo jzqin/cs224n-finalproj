@@ -13,6 +13,7 @@ from transformers import DistilBertPreTrainedModel, DistilBertModel
 MASK_TOKEN = -100 # is this best way of initializing this?
 CLS_TOKEN = 101
 SEP_TOKEN = 102
+GAMMAS_INIT = [0.0]
 
 class AuxMLMModel(DistilBertPreTrainedModel):
     def __init__(self, config):
@@ -35,9 +36,16 @@ class AuxMLMModel(DistilBertPreTrainedModel):
 
         self.vocab_size = None
         self.mask_token = MASK_TOKEN # maybe should come up with a better way of initializing this, in case we want to change it?
+        self.gamma_idx = 0
+        self.gammas = GAMMAS_INIT
 
     def set_mask_token(self, mask_token):
         self.mask_token = mask_token
+
+    # rely on the training function to set the gammas as a function of training step
+    def set_gammas (self, gammas):
+        self.gammas = gammas
+        self.gamma_idx = 0
 
     # from MLM
     def get_output_embeddings(self):
@@ -51,7 +59,7 @@ class AuxMLMModel(DistilBertPreTrainedModel):
     def add_vocab_size(self, vocab_size):
         # vocab should be a list of strings
         self.vocab_size = vocab_size
-        
+
     # Synchronous masking for MLM task
     def mlm_mask(self, inputs):
         # random.seed(0)
@@ -65,7 +73,7 @@ class AuxMLMModel(DistilBertPreTrainedModel):
         # We sample a few tokens in each sequence for MLM training (15%)
         probability_matrix = torch.full(labels.shape, self.mlm_probability, device=inputs.device)
 
-        special_tokens_mask = torch.zeros_like(inputs)
+        special_tokens_mask = torch.zeros_like(inputs, device=inputs.device)
         special_tokens_mask[inputs == CLS_TOKEN] = 1 # which tokens can't be masked? [CLS] and [SEP]
         special_tokens_mask[inputs == SEP_TOKEN] = 1
         special_tokens_mask = special_tokens_mask.bool() 
@@ -80,7 +88,7 @@ class AuxMLMModel(DistilBertPreTrainedModel):
 
         # 10% of the time, we replace masked input tokens with random word
         indices_random = torch.bernoulli(torch.full(labels.shape, 0.5, device=inputs.device)).bool() & masked_indices & ~indices_replaced
-        random_words = torch.randint(self.vocab_size, labels.shape, dtype=torch.long)
+        random_words = torch.randint(self.vocab_size, labels.shape, dtype=torch.long, device=inputs.device)
         inputs[indices_random] = random_words[indices_random]
 
         # The rest of the time (10% of the time) we keep the masked input tokens unchanged
@@ -116,8 +124,6 @@ class AuxMLMModel(DistilBertPreTrainedModel):
         output_attentions=None,
         output_hidden_states=None,
         return_dict=None,
-        mask_token=None,
-        gamma=0.0, # the proportion of MLM loss [0,1] 
     ):
         r"""
         start_positions (:obj:`torch.LongTensor` of shape :obj:`(batch_size,)`, `optional`):
@@ -181,11 +187,22 @@ class AuxMLMModel(DistilBertPreTrainedModel):
         if mlm_labels is not None:
             mlm_loss = self.mlm_loss_fct(prediction_logits.view(-1, prediction_logits.size(-1)), mlm_labels.view(-1))
 
+        # check that global_idx does not exceed size of gammas
+        if self.gamma_idx > len(self.gammas) - 1:
+            gamma_current = self.gammas[-1]
+        else:
+            gamma_current = self.gammas[self.gamma_idx]
+
+        self.gamma_idx += 1
+
         # compute total loss
-        total_loss = qa_loss + gamma *  mlm_loss
+        if qa_loss is None:
+            total_loss = gamma_current * mlm_loss
+        else:
+            total_loss = qa_loss + gamma_current *  mlm_loss
 
         output = (start_logits, end_logits, prediction_logits) + distilbert_output[1:]
 
-        return ((total_loss,) + output) if mlm_loss is not None else output
+        return ((total_loss,) + output) if total_loss is not None else output
 
 

@@ -256,13 +256,18 @@ def main():
     args = get_train_test_args()
 
     util.set_seed(args.seed)
-    model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
 
+    import pdb; pdb.set_trace()
+    tokenizer = DistilBertTokenizerFast.from_pretrained('distilbert-base-uncased')
+
+    model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
     if args.load_dir:
       model = DistilBertForQuestionAnswering.from_pretrained(args.load_dir)
 
-    tokenizer = DistilBertTokenizerFast.from_pretrained('distilbert-base-uncased')
+    model
 
+    import pdb; pdb.set_trace()
+    
     if args.do_train:
         if not os.path.exists(args.save_dir):
             os.makedirs(args.save_dir)

@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 from collections import OrderedDict
+import numpy as np
 import torch
 import csv
 import util
@@ -192,6 +193,17 @@ class Trainer():
             return preds, results
         return results
 
+    # function to generate range of gammas (will want to experiment with different schemes)
+    def get_gammas(self, gamma_start, gamma_end, n_steps, scheme):
+        # probably want to make a new class for gamma generation
+
+        # linear case
+        if scheme == "linear":
+            return np.arange(gamma_start, gamma_end, (gamma_end - gamma_start) / n_steps)
+
+        else:
+            return [0.0] * n_steps # default to no MLM loss
+
     def train(self, model, train_dataloader, eval_dataloader, val_dict):
         device = self.device
         model.to(device)
@@ -200,10 +212,22 @@ class Trainer():
         best_scores = {'F1': -1.0, 'EM': -1.0}
         tbx = SummaryWriter(self.save_dir)
 
+        gamma_start = 0.5 # hard-code for now
+        gamma_end   = 0.1
+        n_steps = self.num_epochs * len(train_dataloader) # is this the correct number of batches per epoch?  
+        gammas  = self.get_gammas(gamma_start, gamma_end, n_steps, "linear")
+
         for epoch_num in range(self.num_epochs):
             self.log.info(f'Epoch: {epoch_num}')
             with torch.enable_grad(), tqdm(total=len(train_dataloader.dataset)) as progress_bar:
                 for batch in train_dataloader:
+
+                    # check that global_idx does not exceed size of gammas
+                    if global_idx > len(gammas) - 1:
+                        gamma_current = gamma_end
+                    else:
+                        gamma_current = gammas[global_idx]
+
                     optim.zero_grad()
                     model.train()
                     input_ids = batch['input_ids'].to(device)
@@ -212,7 +236,7 @@ class Trainer():
                     end_positions = batch['end_positions'].to(device)
                     outputs = model(input_ids, attention_mask=attention_mask,
                                     start_positions=start_positions,
-                                    end_positions=end_positions)
+                                    end_positions=end_positions, gamma = gamma_current)
                     loss = outputs[0]
                     loss.backward()
                     optim.step()
@@ -264,7 +288,9 @@ def main():
         model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
     elif args.model == 'auxmlm':
         model = AuxMLMModel.from_pretrained('distilbert-base-uncased')
+        model.set_mask_token(tokenizer.mask_token_id)
         model.add_vocab_size(vocab_size)
+        assert(model.mlm_probability == 0.15)
     else:
         raise ValueError('--model parameter must be one of the following:{"bert", "auxmlm"}')
     
@@ -273,6 +299,7 @@ def main():
             model = DistilBertForQuestionAnswering.from_pretrained(args.load_dir)
         elif args.model == 'auxmlm':
             model = AuxMLMModel.from_pretrained(args.load_dir)
+            model.set_mask_token(tokenizer.mask_token_id)
             model.add_vocab_size(vocab_size)
             
     if args.do_train:

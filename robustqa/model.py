@@ -5,7 +5,8 @@ import random
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.nn import CrossEntropyLoss, GELU
+import torch.nn.functional as F
+from torch.nn import CrossEntropyLoss
 
 from transformers import DistilBertPreTrainedModel, DistilBertModel
 
@@ -35,6 +36,9 @@ class AuxMLMModel(DistilBertPreTrainedModel):
         self.vocab_size = None
         self.mask_token = MASK_TOKEN # maybe should come up with a better way of initializing this, in case we want to change it?
 
+    def set_mask_token(self, mask_token):
+        self.mask_token = mask_token
+
     # from MLM
     def get_output_embeddings(self):
         return self.vocab_projector
@@ -51,13 +55,14 @@ class AuxMLMModel(DistilBertPreTrainedModel):
     # Synchronous masking for MLM task
     def mlm_mask(self, inputs):
         # random.seed(0)
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
         if self.vocab_size is None:
             raise AttributeError('AuxMLMModel must have vocabulary size added via add_vocab_size() before training occurs')
 
         # from RoBERTa paper: https://github.com/huggingface/transformers/blob/master/src/transformers/data/data_collator.py#L356
         labels = inputs.clone()
-        # We sample a few tokens in each sequence for MLM training
+
+        # We sample a few tokens in each sequence for MLM training (15%)
         probability_matrix = torch.full(labels.shape, self.mlm_probability, device=inputs.device)
 
         special_tokens_mask = torch.zeros_like(inputs)
@@ -110,8 +115,9 @@ class AuxMLMModel(DistilBertPreTrainedModel):
         end_positions=None,
         output_attentions=None,
         output_hidden_states=None,
+        return_dict=None,
         mask_token=None,
-        gamma=0 # the proportion of MLM loss [0,1] 
+        gamma=0.0, # the proportion of MLM loss [0,1] 
     ):
         r"""
         start_positions (:obj:`torch.LongTensor` of shape :obj:`(batch_size,)`, `optional`):
@@ -123,9 +129,9 @@ class AuxMLMModel(DistilBertPreTrainedModel):
             Positions are clamped to the length of the sequence (:obj:`sequence_length`). Position outside of the
             sequence are not taken into account for computing the loss.
         """
-
         input_ids, mlm_labels = self.mlm_mask(input_ids) # mask inputs to both losses
 
+        # This is the result of DistilbertModel's forward method
         distilbert_output = self.distilbert(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -133,7 +139,7 @@ class AuxMLMModel(DistilBertPreTrainedModel):
             inputs_embeds=inputs_embeds,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
-            return_dict = None
+            return_dict = return_dict,
         )        
 
         hidden_states = distilbert_output[0]  # (bs, max_query_len, dim)
@@ -147,7 +153,7 @@ class AuxMLMModel(DistilBertPreTrainedModel):
 
         # Compute logits from MLM
         prediction_logits = self.vocab_transform(hidden_states)  # (bs, max_query_length, dim)
-        prediction_logits = GELU(prediction_logits)  # (bs, max_query_length, dim)
+        prediction_logits = F.gelu(prediction_logits)  # (bs, max_query_length, dim)
         prediction_logits = self.vocab_layer_norm(prediction_logits)  # (bs, max_query_length, dim)
         prediction_logits = self.vocab_projector(prediction_logits)  # (bs, max_query_length, vocab_size)
 

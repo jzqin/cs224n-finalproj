@@ -5,31 +5,9 @@ import random
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.nn import CrossEntropyLoss
+from torch.nn import CrossEntropyLoss, GELU
 
-from ...activations import gelu
-from ...file_utils import (
-    add_code_sample_docstrings,
-    add_start_docstrings,
-    add_start_docstrings_to_model_forward,
-    replace_return_docstrings,
-)
-from ...modeling_outputs import (
-    BaseModelOutput,
-    MaskedLMOutput,
-    MultipleChoiceModelOutput,
-    QuestionAnsweringModelOutput,
-    SequenceClassifierOutput,
-    TokenClassifierOutput,
-)
-from ...modeling_utils import (
-    PreTrainedModel,
-    apply_chunking_to_forward,
-    find_pruneable_heads_and_indices,
-    prune_linear_layer,
-)
-from ...utils import logging
-from .configuration_distilbert import DistilBertConfig
+from transformers import DistilBertPreTrainedModel, DistilBertModel
 
 MASK_TOKEN = -100 # is this best way of initializing this?
 CLS_TOKEN = 101
@@ -51,8 +29,7 @@ class AuxMLMModel(DistilBertPreTrainedModel):
 
         self.init_weights()
 
-        if self.mlm_probability = None:
-            self.mlm_probability = 0.15 # this is default for BERT and RoBERTa
+        self.mlm_probability = 0.15 # this is default for BERT and RoBERTa
         self.mlm_loss_fct = nn.CrossEntropyLoss()
 
         self.vocab_size = None
@@ -67,20 +44,21 @@ class AuxMLMModel(DistilBertPreTrainedModel):
         self.vocab_projector = new_embeddings
 
     # add vocabulary size to model for MLM
-    def add_vocab_size(self, vocab):
+    def add_vocab_size(self, vocab_size):
         # vocab should be a list of strings
-        self.vocab = vocab
+        self.vocab_size = vocab_size
         
     # Synchronous masking for MLM task
     def mlm_mask(self, inputs):
         # random.seed(0)
+        import pdb; pdb.set_trace()
         if self.vocab_size is None:
             raise AttributeError('AuxMLMModel must have vocabulary size added via add_vocab_size() before training occurs')
 
         # from RoBERTa paper: https://github.com/huggingface/transformers/blob/master/src/transformers/data/data_collator.py#L356
         labels = inputs.clone()
         # We sample a few tokens in each sequence for MLM training
-        probability_matrix = torch.full(labels.shape, self.mlm_probability)
+        probability_matrix = torch.full(labels.shape, self.mlm_probability, device=inputs.device)
 
         special_tokens_mask = torch.zeros_like(inputs)
         special_tokens_mask[inputs == CLS_TOKEN] = 1 # which tokens can't be masked? [CLS] and [SEP]
@@ -92,11 +70,11 @@ class AuxMLMModel(DistilBertPreTrainedModel):
         labels[~masked_indices] = -100  # We only compute loss on masked tokens
 
         # 80% of the time, we replace masked input tokens with tokenizer.mask_token ([MASK])
-        indices_replaced = torch.bernoulli(torch.full(labels.shape, 0.8)).bool() & masked_indices
+        indices_replaced = torch.bernoulli(torch.full(labels.shape, 0.8, device=inputs.device)).bool() & masked_indices
         inputs[indices_replaced] = self.mask_token
 
         # 10% of the time, we replace masked input tokens with random word
-        indices_random = torch.bernoulli(torch.full(labels.shape, 0.5)).bool() & masked_indices & ~indices_replaced
+        indices_random = torch.bernoulli(torch.full(labels.shape, 0.5, device=inputs.device)).bool() & masked_indices & ~indices_replaced
         random_words = torch.randint(self.vocab_size, labels.shape, dtype=torch.long)
         inputs[indices_random] = random_words[indices_random]
 
@@ -169,7 +147,7 @@ class AuxMLMModel(DistilBertPreTrainedModel):
 
         # Compute logits from MLM
         prediction_logits = self.vocab_transform(hidden_states)  # (bs, max_query_length, dim)
-        prediction_logits = gelu(prediction_logits)  # (bs, max_query_length, dim)
+        prediction_logits = GELU(prediction_logits)  # (bs, max_query_length, dim)
         prediction_logits = self.vocab_layer_norm(prediction_logits)  # (bs, max_query_length, dim)
         prediction_logits = self.vocab_projector(prediction_logits)  # (bs, max_query_length, vocab_size)
 

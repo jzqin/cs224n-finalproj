@@ -9,7 +9,7 @@ from transformers import DistilBertTokenizerFast
 from transformers import DistilBertForQuestionAnswering
 from transformers import AdamW
 from tensorboardX import SummaryWriter
-
+from model import AuxMLMModel
 
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import RandomSampler, SequentialSampler
@@ -257,17 +257,24 @@ def main():
 
     util.set_seed(args.seed)
 
-    import pdb; pdb.set_trace()
     tokenizer = DistilBertTokenizerFast.from_pretrained('distilbert-base-uncased')
-
-    model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
-    if args.load_dir:
-      model = DistilBertForQuestionAnswering.from_pretrained(args.load_dir)
-
-    model
-
-    import pdb; pdb.set_trace()
+    vocab_size = len(tokenizer.get_vocab().keys())
     
+    if args.model == 'bert':
+        model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
+    elif args.model == 'auxmlm':
+        model = AuxMLMModel.from_pretrained('distilbert-base-uncased')
+        model.add_vocab_size(vocab_size)
+    else:
+        raise ValueError('--model parameter must be one of the following:{"bert", "auxmlm"}')
+    
+    if args.load_dir:
+        if args.model == 'bert':
+            model = DistilBertForQuestionAnswering.from_pretrained(args.load_dir)
+        elif args.model == 'auxmlm':
+            model = AuxMLMModel.from_pretrained(args.load_dir)
+            model.add_vocab_size(vocab_size)
+            
     if args.do_train:
         if not os.path.exists(args.save_dir):
             os.makedirs(args.save_dir)

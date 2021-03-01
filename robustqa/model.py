@@ -124,6 +124,7 @@ class AuxMLMModel(DistilBertPreTrainedModel):
         output_attentions=None,
         output_hidden_states=None,
         return_dict=None,
+        decay_gamma=False,
     ):
         r"""
         start_positions (:obj:`torch.LongTensor` of shape :obj:`(batch_size,)`, `optional`):
@@ -193,7 +194,8 @@ class AuxMLMModel(DistilBertPreTrainedModel):
         else:
             gamma_current = self.gammas[self.gamma_idx]
 
-        self.gamma_idx += 1
+        if decay_gamma:
+            self.gamma_idx += 1
 
         # compute total loss
         if qa_loss is None:

@@ -166,7 +166,7 @@ class Trainer():
                 input_ids = batch['input_ids'].to(device)
                 attention_mask = batch['attention_mask'].to(device)
                 batch_size = len(input_ids)
-                outputs = model(input_ids, attention_mask=attention_mask, return_dict = False)
+                outputs = model(input_ids, attention_mask=attention_mask, return_dict = False, decay_gamma=False)
 
                 # Models are set to not return a dict, since we have not implemented this for AuxMLM
                 if (len(outputs) > 2):
@@ -222,7 +222,7 @@ class Trainer():
 
                     outputs = model(input_ids, attention_mask=attention_mask,
                                     start_positions=start_positions,
-                                    end_positions=end_positions)
+                                    end_positions=end_positions, decay_gamma=True)
 
                     loss = outputs[0]
                     loss.backward()

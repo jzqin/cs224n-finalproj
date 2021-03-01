@@ -166,9 +166,10 @@ class Trainer():
                 input_ids = batch['input_ids'].to(device)
                 attention_mask = batch['attention_mask'].to(device)
                 batch_size = len(input_ids)
-                outputs = model(input_ids, attention_mask=attention_mask, return_dict = False, decay_gamma=False)
+                outputs = model(input_ids, attention_mask=attention_mask, return_dict = False, decay_gamma=False, mask_inputs=False)
+                # outputs = model(input_ids, attention_mask=attention_mask, return_dict = False) # db4qa base case
 
-                # Models are set to not return a dict, since we have not implemented this for AuxMLM
+                # Models are set to return a tuple rather than a dict, since we have not implemented this for AuxMLM
                 if (len(outputs) > 2):
                     start_logits, end_logits = outputs[1], outputs[2]
                 else:
@@ -222,7 +223,11 @@ class Trainer():
 
                     outputs = model(input_ids, attention_mask=attention_mask,
                                     start_positions=start_positions,
-                                    end_positions=end_positions, decay_gamma=True)
+                                    end_positions=end_positions, decay_gamma=True,
+                                    mask_inputs=True)
+                    #outputs = model(input_ids, attention_mask=attention_mask,
+                    #                start_positions=start_positions,
+                    #                end_positions=end_positions) # db4qa base case
 
                     loss = outputs[0]
                     loss.backward()

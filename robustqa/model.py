@@ -125,6 +125,7 @@ class AuxMLMModel(DistilBertPreTrainedModel):
         output_hidden_states=None,
         return_dict=None,
         decay_gamma=False,
+        mask_inputs=False,
     ):
         r"""
         start_positions (:obj:`torch.LongTensor` of shape :obj:`(batch_size,)`, `optional`):
@@ -136,7 +137,11 @@ class AuxMLMModel(DistilBertPreTrainedModel):
             Positions are clamped to the length of the sequence (:obj:`sequence_length`). Position outside of the
             sequence are not taken into account for computing the loss.
         """
-        input_ids, mlm_labels = self.mlm_mask(input_ids) # mask inputs to both losses
+
+        if mask_inputs:
+            input_ids, mlm_labels = self.mlm_mask(input_ids) # mask inputs to both losses
+        else:
+            mlm_labels = input_ids # we don't care about MLM if we are not masking inputs
 
         # This is the result of DistilbertModel's forward method
         distilbert_output = self.distilbert(
@@ -147,7 +152,7 @@ class AuxMLMModel(DistilBertPreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict = return_dict,
-        )        
+        )
 
         hidden_states = distilbert_output[0]  # (bs, max_query_len, dim)
 

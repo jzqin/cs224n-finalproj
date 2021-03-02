@@ -2,7 +2,6 @@ import argparse
 import json
 import os
 from collections import OrderedDict
-import numpy as np
 import torch
 import csv
 import util
@@ -273,7 +272,7 @@ def get_gammas(gamma_start, gamma_end, n_steps, scheme):
 
     # linear case
     if scheme == "linear":
-        return np.arange(gamma_start, gamma_end, (gamma_end - gamma_start) / n_steps)
+        return torch.arange(gamma_start, gamma_end, (gamma_end - gamma_start) / n_steps)
 
     else:
         return [0.0] * n_steps # default to no MLM loss
@@ -284,6 +283,7 @@ def main():
 
     util.set_seed(args.seed)
 
+    # import pdb; pdb.set_trace()
     tokenizer = DistilBertTokenizerFast.from_pretrained('distilbert-base-uncased')
     vocab_size = len(tokenizer.get_vocab().keys())
     
@@ -326,8 +326,8 @@ def main():
                                 sampler=SequentialSampler(val_dataset))
 
         if args.model == 'auxmlm':
-            gamma_start = 0.5 # hard-code for now
-            gamma_end   = 0.1
+            gamma_start = 2.0 # hard-code for now
+            gamma_end   = 0.5
             n_steps = args.num_epochs * len(train_loader) # is this the correct number of batches per epoch?
             gammas  = get_gammas(gamma_start, gamma_end, n_steps, "linear")
             model.set_gammas(gammas)

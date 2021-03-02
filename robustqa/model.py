@@ -11,6 +11,7 @@ from torch.nn import CrossEntropyLoss
 from transformers import DistilBertPreTrainedModel, DistilBertModel
 
 MASK_TOKEN = -100 # is this best way of initializing this?
+PAD_TOKEN = 0
 CLS_TOKEN = 101
 SEP_TOKEN = 102
 GAMMAS_INIT = [0.0]
@@ -74,8 +75,9 @@ class AuxMLMModel(DistilBertPreTrainedModel):
         probability_matrix = torch.full(labels.shape, self.mlm_probability, device=inputs.device)
 
         special_tokens_mask = torch.zeros_like(inputs, device=inputs.device)
-        special_tokens_mask[inputs == CLS_TOKEN] = 1 # which tokens can't be masked? [CLS] and [SEP]
+        special_tokens_mask[inputs == CLS_TOKEN] = 1 # which tokens can't be masked? [CLS], [SEP], [PAD]
         special_tokens_mask[inputs == SEP_TOKEN] = 1
+        special_tokens_mask[inputs == PAD_TOKEN] = 1
         special_tokens_mask = special_tokens_mask.bool() 
 
         probability_matrix.masked_fill_(special_tokens_mask, value=0.0)

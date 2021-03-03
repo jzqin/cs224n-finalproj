@@ -44,9 +44,12 @@ class AuxMLMModel(DistilBertPreTrainedModel):
         self.mask_token = mask_token
 
     # rely on the training function to set the gammas as a function of training step
-    def set_gammas (self, gammas):
+    def set_gammas(self, gammas):
         self.gammas = gammas
         self.gamma_idx = 0
+
+    def get_gamma(self):
+        return self.gammas[self.gamma_idx]
 
     # from MLM
     def get_output_embeddings(self):
@@ -78,7 +81,7 @@ class AuxMLMModel(DistilBertPreTrainedModel):
         special_tokens_mask[inputs == CLS_TOKEN] = 1 # which tokens can't be masked? [CLS], [SEP], [PAD]
         special_tokens_mask[inputs == SEP_TOKEN] = 1
         special_tokens_mask[inputs == PAD_TOKEN] = 1
-        special_tokens_mask = special_tokens_mask.bool() 
+        special_tokens_mask = special_tokens_mask.bool()
 
         probability_matrix.masked_fill_(special_tokens_mask, value=0.0)
         masked_indices = torch.bernoulli(probability_matrix).bool()

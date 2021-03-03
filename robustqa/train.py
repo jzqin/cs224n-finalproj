@@ -165,8 +165,7 @@ class Trainer():
                 input_ids = batch['input_ids'].to(device)
                 attention_mask = batch['attention_mask'].to(device)
                 batch_size = len(input_ids)
-                outputs = model(input_ids, attention_mask=attention_mask, return_dict = False, decay_gamma=False, mask_inputs=False)
-                # outputs = model(input_ids, attention_mask=attention_mask, return_dict = False) # db4qa base case
+                outputs = model(input_ids, attention_mask=attention_mask, return_dict = False)
 
                 # Models are set to return a tuple rather than a dict, since we have not implemented this for AuxMLM
                 if (len(outputs) > 2):
@@ -200,7 +199,7 @@ class Trainer():
         return results
 
 
-    def train(self, model, train_dataloader, eval_dataloader, val_dict):
+    def train(self, model, train_dataloader, eval_dataloader, val_dict, model_type):
         device = self.device
         model.to(device)
         optim = AdamW(model.parameters(), lr=self.lr)
@@ -220,13 +219,15 @@ class Trainer():
                     start_positions = batch['start_positions'].to(device)
                     end_positions = batch['end_positions'].to(device)
 
-                    outputs = model(input_ids, attention_mask=attention_mask,
-                                    start_positions=start_positions,
-                                    end_positions=end_positions, decay_gamma=True,
-                                    mask_inputs=True)
-                    #outputs = model(input_ids, attention_mask=attention_mask,
-                    #                start_positions=start_positions,
-                    #                end_positions=end_positions) # db4qa base case
+                    if model_type == "auxmlm":
+                        outputs = model(input_ids, attention_mask=attention_mask,
+                                        start_positions=start_positions,
+                                        end_positions=end_positions, decay_gamma=True,
+                                        mask_inputs=True)
+                    else:
+                        outputs = model(input_ids, attention_mask=attention_mask,
+                                        start_positions=start_positions,
+                                        end_positions=end_positions) # db4qa base case
 
                     loss = outputs[0]
                     loss.backward()
@@ -286,7 +287,7 @@ def main():
     # import pdb; pdb.set_trace()
     tokenizer = DistilBertTokenizerFast.from_pretrained('distilbert-base-uncased')
     vocab_size = len(tokenizer.get_vocab().keys())
-    
+
     if args.model == 'bert':
         model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
     elif args.model == 'auxmlm':
@@ -329,10 +330,10 @@ def main():
             gamma_start = 2.0 # hard-code for now
             gamma_end   = 0.5
             n_steps = args.num_epochs * len(train_loader) # is this the correct number of batches per epoch?
-            gammas  = get_gammas(gamma_start, gamma_end, n_steps, "linear")
+            gammas = get_gammas(gamma_start, gamma_end, n_steps, "linear")
             model.set_gammas(gammas)
 
-        best_scores = trainer.train(model, train_loader, val_loader, val_dict)
+        best_scores = trainer.train(model, train_loader, val_loader, val_dict, args.model)
 
     if args.do_eval:
         args.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -340,8 +341,12 @@ def main():
         log = util.get_logger(args.save_dir, f'log_{split_name}')
         trainer = Trainer(args, log)
         checkpoint_path = os.path.join(args.save_dir, 'checkpoint')
-        # model = DistilBertForQuestionAnswering(checkpoint_path)
-        model = AuxMLMModel.from_pretrained(checkpoint_path)
+
+        if args.model == 'auxmlm':
+            model = AuxMLMModel.from_pretrained(checkpoint_path)
+        elif args.model == 'bert':
+            model = DistilBertForQuestionAnswering.from_pretrained(checkpoint_path)
+
         model.to(args.device)
         eval_dataset, eval_dict = get_dataset(args, args.eval_datasets, args.eval_dir, tokenizer, split_name)
         eval_loader = DataLoader(eval_dataset,

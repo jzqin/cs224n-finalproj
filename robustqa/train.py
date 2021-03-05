@@ -327,8 +327,8 @@ def main():
                                 sampler=SequentialSampler(val_dataset))
 
         if args.model == 'auxmlm':
-            gamma_start = 2.0 # hard-code for now
-            gamma_end   = 0.5
+            gamma_start = 0.6 # hard-code for now
+            gamma_end   = 0.1
             n_steps = args.num_epochs * len(train_loader) # is this the correct number of batches per epoch?
             gammas = get_gammas(gamma_start, gamma_end, n_steps, "linear")
             model.set_gammas(gammas)

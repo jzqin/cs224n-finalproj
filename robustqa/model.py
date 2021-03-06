@@ -85,18 +85,18 @@ class AuxMLMModel(DistilBertPreTrainedModel):
 
         # Get the largest geometric sample of span lengths (batch_size, sent_len), clamped  
         ldist = geom.Geometric(torch.full(labels.shape, self.len_probability, device=inputs.device)).sample()
-        ldist_trunc = torch.clamp(ldist, min=0.0, max=self.max_spanlen)
+        ldist_trunc = torch.clamp(ldist, min=0.0, max=self.max_spanlen).float()
         sent_len = labels.shape[1] # lengths of input sentences (could pass this to the constructor)
 
         nmask = math.ceil(sent_len * self.mlm_probability)    # number of total modifications expected
         cumul = torch.cumsum(ldist_trunc, dim=1, dtype=float) # accumulate span lengths 
-        lengths = torch.where(cumul < (nmask + 1 / self.len_probability) , ldist_trunc, torch.Tensor([0.])) # only consider lengths up to ~nmask
+        lengths = torch.where(cumul < (nmask + 1 / self.len_probability) , ldist_trunc, torch.Tensor([0.]).to(inputs.device)) # only consider lengths up to ~nmask
         nspans = torch.unsqueeze(torch.count_nonzero(lengths, dim = 1), dim =1) # number of spans in each sentence
         lengths = lengths[:, :torch.max(nspans)]              # truncate length tensor to max span length
 
         # randomly (uniformly) generate anchoring indices for each span length, get ending indices
         start_idxs = torch.ceil(torch.rand_like(lengths, dtype=float) * sent_len).float()
-        start_idxs = torch.where(lengths > 0., start_idxs, torch.Tensor([0.])) # ignore indices with 0 length 
+        start_idxs = torch.where(lengths > 0., start_idxs, torch.Tensor([0.]).to(inputs.device)) # ignore indices with 0 length
         end_idxs = start_idxs + lengths # calculate stop indices for each span
         end_idxs = torch.clamp(end_idxs, min=0.0, max=sent_len) # clamp end indices 
 
@@ -105,12 +105,12 @@ class AuxMLMModel(DistilBertPreTrainedModel):
         masked_spans = masked_spans.int(); random_spans = random_spans.int()
         masked_indices = torch.zeros_like(inputs, device=inputs.device, dtype=torch.int64) # initialize masks
         random_indices = torch.zeros_like(inputs, device=inputs.device, dtype=torch.int64) # initialize randomized indices
-        increment = torch.ones_like(start_idxs, device=inputs.device).type(torch.LongTensor) # used to increment span indices
+        increment = torch.ones_like(start_idxs).type(torch.LongTensor).to(inputs.device) # used to increment span indices
         current_idxs = start_idxs
 
         # fill in masking and randomized indices consecutively
         for i in range(self.max_spanlen):
-            token_indices = torch.where(current_idxs < end_idxs, current_idxs, torch.Tensor([0.])).type(torch.LongTensor)
+            token_indices = torch.where(current_idxs < end_idxs, current_idxs, torch.Tensor([0.]).to(inputs.device)).type(torch.LongTensor).to(inputs.device)
             masked_indices.scatter_(1, token_indices * masked_spans, increment) # we scatter from a tensor of all 1s
             random_indices.scatter_(1, token_indices * random_spans, increment)
             current_idxs += increment
@@ -210,7 +210,7 @@ class AuxMLMModel(DistilBertPreTrainedModel):
         """
 
         if mask_inputs:
-            input_ids, mlm_labels = self.span_mask(inputs_ids)
+            input_ids, mlm_labels = self.span_mask(input_ids)
             #input_ids, mlm_labels = self.mlm_mask(input_ids) # mask inputs to both losses
         else:
             mlm_labels = input_ids # we don't care about MLM if we are not masking inputs

@@ -21,6 +21,12 @@ class AuxMLMModel(DistilBertPreTrainedModel):
         super().__init__(config)
 
         self.distilbert = DistilBertModel(config)
+        self.qa_transformer_layer = copy.deepcopy(self.distilbert.transformer.layer[0])
+        
+        for layer in self.qa_transformer_layer.children(): # this may be missing a few of the more nested children layers...
+            for sublayer in layer.children():              # but I think the important layers are all reset
+                if hasattr(sublayer, 'reset_parameters'):
+                    sublayer.reset_parameters()
 
         self.qa_outputs = nn.Linear(config.dim, config.num_labels)
         assert config.num_labels == 2
@@ -161,18 +167,20 @@ class AuxMLMModel(DistilBertPreTrainedModel):
 
         hidden_states = distilbert_output[0]  # (bs, max_query_len, dim)
 
-        # Compute logits from QA
-        hidden_states = self.dropout(hidden_states)  # (bs, max_query_len, dim)
-        logits = self.qa_outputs(hidden_states)  # (bs, max_query_len, 2)
-        start_logits, end_logits = logits.split(1, dim=-1)
-        start_logits = start_logits.squeeze(-1)  # (bs, max_query_len)
-        end_logits = end_logits.squeeze(-1)  # (bs, max_query_len)
-
+        hidden_states_qa = self.qa_transformer_layer(distilbert_output[0], attn_mask=attention_mask, output_attentions=output_attentions)[-1]
+        
         # Compute logits from MLM
         prediction_logits = self.vocab_transform(hidden_states)  # (bs, max_query_length, dim)
         prediction_logits = F.gelu(prediction_logits)  # (bs, max_query_length, dim)
         prediction_logits = self.vocab_layer_norm(prediction_logits)  # (bs, max_query_length, dim)
         prediction_logits = self.vocab_projector(prediction_logits)  # (bs, max_query_length, vocab_size)
+
+        # Compute logits from QA
+        hidden_states_qa = self.dropout(hidden_states_qa)  # (bs, max_query_len, dim)
+        logits = self.qa_outputs(hidden_states_qa)  # (bs, max_query_len, 2)
+        start_logits, end_logits = logits.split(1, dim=-1)
+        start_logits = start_logits.squeeze(-1)  # (bs, max_query_len)
+        end_logits = end_logits.squeeze(-1)  # (bs, max_query_len)
 
         # Compute Cross-Entropy Loss from QA
         qa_loss = None

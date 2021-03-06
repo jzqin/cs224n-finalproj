@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 from collections import OrderedDict
+from itertools import chain
 import torch
 import csv
 import util
@@ -202,7 +203,17 @@ class Trainer():
     def train(self, model, train_dataloader, eval_dataloader, val_dict, model_type):
         device = self.device
         model.to(device)
-        optim = AdamW(model.parameters(), lr=self.lr)
+        import pdb; pdb.set_trace()
+        distilbert_parameters = filter(lambda p: p.requires_grad,
+                                       model.distilbert.parameters())
+        qa_parameters = filter(lambda p: p.requires_grad,
+                               chain(model.qa_transformer_layer.parameters(),
+                                     model.qa_outputs.parameters(),
+                                     model.dropout.parameters()))
+        distilbert_optimizer = AdamW(distilbert_parameters, lr=self.lr)
+        qa_optimizer = AdamW(qa_parameters, lr=self.lr)
+        
+        # optim = AdamW(model.parameters(), lr=self.lr)
         global_idx = 0
         best_scores = {'F1': -1.0, 'EM': -1.0}
         tbx = SummaryWriter(self.save_dir)
@@ -212,7 +223,9 @@ class Trainer():
             with torch.enable_grad(), tqdm(total=len(train_dataloader.dataset)) as progress_bar:
                 for batch in train_dataloader:
 
-                    optim.zero_grad()
+                    distilbert_optimizer.zero_grad()
+                    qa_optimizer.zero_grad()
+                    # optim.zero_grad()
                     model.train()
                     input_ids = batch['input_ids'].to(device)
                     attention_mask = batch['attention_mask'].to(device)
@@ -229,9 +242,18 @@ class Trainer():
                                         start_positions=start_positions,
                                         end_positions=end_positions) # db4qa base case
 
+                    # sequential layer unfreezing depending on which epoch we're on
+                    # TODO: also allow embedding layer to be frozen/unfrozen?
+                    if epoch_num < 1: # hard code this for now, may change later
+                        distilbert_optimizer.zero_grad()
+                    #elif epoch_num < 2:
+                    #    model.distilbert.zero_grad()
+                    
                     loss = outputs[0]
                     loss.backward()
-                    optim.step()
+                    distilbert_optimizer.step()
+                    qa_optimizer.step()
+                    # optim.step()
                     progress_bar.update(len(input_ids))
                     progress_bar.set_postfix(epoch=epoch_num, NLL=loss.item())
                     tbx.add_scalar('train/NLL', loss.item(), global_idx)

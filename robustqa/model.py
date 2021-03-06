@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.distributions.geometric as geom
 from torch.nn import CrossEntropyLoss
 
 from transformers import DistilBertPreTrainedModel, DistilBertModel
@@ -33,6 +34,9 @@ class AuxMLMModel(DistilBertPreTrainedModel):
         self.init_weights()
 
         self.mlm_probability = 0.15 # this is default for BERT and RoBERTa
+        self.len_probability = 0.2 # span_length prob for geometric distribution
+        self.max_spanlen = 8 # length of largest acceptable span
+
         self.mlm_loss_fct = nn.CrossEntropyLoss()
 
         self.vocab_size = None
@@ -63,7 +67,57 @@ class AuxMLMModel(DistilBertPreTrainedModel):
     def add_vocab_size(self, vocab_size):
         # vocab should be a list of strings
         self.vocab_size = vocab_size
+    
+    # Use SPANBert masking scheme
+    def span_mask(self, inputs):
+        if self.vocab_size is None:
+            raise AttributeError('AuxMLMModel must have vocabulary size added via add_vocab_size() before training occurs')
 
+        # from RoBERTa paper: https://github.com/huggingface/transformers/blob/master/src/transformers/data/data_collator.py#L356
+        labels = inputs.clone()
+
+        # detect tokens we should not mask
+        special_tokens_mask = torch.zeros_like(inputs, device=inputs.device)
+        special_tokens_mask[inputs == CLS_TOKEN] = 1 # which tokens can't be masked? [CLS], [SEP], [PAD]
+        special_tokens_mask[inputs == SEP_TOKEN] = 1
+        special_tokens_mask[inputs == PAD_TOKEN] = 1
+        special_tokens_mask = special_tokens_mask.bool()
+
+        ldist = geom.Geometric(torch.full(labels.shape, self.len_probability, device=inputs.device)).sample()
+        ldist_trunc = torch.where(ldist < self.max_spanlen, ldist, torch.Tensor([self.max_spanlen]))
+        sent_len = labels.shape[1] # lengths of input sentences (could pass this to the constructor)
+
+        nmask = math.ceil(sent_len * self.mlm_probability) # number of total masks
+        cumul = torch.cumsum(ldist_trunc, dim=1, dtype=float)
+        lengths = torch.where(cumul < (nmask + 1 / self.len_probability) , ldist_trunc, torch.Tensor([0.]))   # lengths to mask in each sentence.
+        nspans = torch.unsqueeze(torch.count_nonzero(lengths, dim = 1), dim =1) # number of spans in each sentence
+        lengths = lengths[:, :torch.max(nspans)]
+
+        # randomly generate anchoring indices for each length
+        anchors = torch.ceil(torch.rand_like(lengths, dtype=float) * sent_len).float()
+        start_idxs = torch.where(lengths > 0., anchors, torch.Tensor([0.]))
+        end_idxs = start_idxs + lengths
+        end_idxs = torch.where(end_idxs < sent_len, end_idxs, torch.Tensor([0.]))
+
+        #masked_spans =   torch.bernoulli(torch.full(lengths, 0.8, device=inputs.device)).bool() # spans that will use [MASK]
+        masked_indices = torch.zeros_like(inputs, device=inputs.device, dtype=torch.int32) # initialize masks
+        increment = torch.ones_like(start_idxs, device=inputs.device, dtype=torch.int32)
+        current_idxs = start_idxs
+
+        for i in range(self.max_spanlen):
+            token_indices = torch.where(current_idxs < end_idxs, current_idxs, torch.Tensor([0.])).type(torch.LongTensor)
+            masked_indices.scatter_(1, token_indices, increment)
+            current_idxs += increment
+        
+        masked_indices.masked_fill_(special_tokens_mask, value=0)
+        masked_indices = masked_indices.bool()
+
+        labels[~masked_indices] = self.mask_token
+        inputs[masked_indices] = self.mask_token
+
+        return inputs, labels
+        
+   
     # Synchronous masking for MLM task
     def mlm_mask(self, inputs):
         # random.seed(0)
@@ -102,7 +156,7 @@ class AuxMLMModel(DistilBertPreTrainedModel):
         """
         #15% of input tokens changed to something else.
         #80% of these tokens are changed to [MASK] (focus on this first)
-        for i in range(len(input_ids)): # TODO input_ids with batched shape
+        for i in rnp.random.choice(sent_length):
             rand1 = random.random()
             if (rand1 > 0.85):
                 rand2 = random.random()
@@ -147,6 +201,8 @@ class AuxMLMModel(DistilBertPreTrainedModel):
             input_ids, mlm_labels = self.mlm_mask(input_ids) # mask inputs to both losses
         else:
             mlm_labels = input_ids # we don't care about MLM if we are not masking inputs
+
+        self.span_mask(input_ids)
 
         # This is the result of DistilbertModel's forward method
         distilbert_output = self.distilbert(

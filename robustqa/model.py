@@ -22,7 +22,7 @@ class AuxMLMModel(DistilBertPreTrainedModel):
 
         self.distilbert = DistilBertModel(config)
         self.qa_transformer_layer = copy.deepcopy(self.distilbert.transformer.layer[0])
-        
+
         for layer in self.qa_transformer_layer.children(): # this may be missing a few of the more nested children layers...
             for sublayer in layer.children():              # but I think the important layers are all reset
                 if hasattr(sublayer, 'reset_parameters'):

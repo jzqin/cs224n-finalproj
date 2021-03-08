@@ -83,9 +83,10 @@ class AuxMLMModel(DistilBertPreTrainedModel):
         special_tokens_mask[inputs == PAD_TOKEN] = 1
         special_tokens_mask = special_tokens_mask.bool()
 
+        #import pdb; pdb.set_trace()
         # Get the largest geometric sample of span lengths (batch_size, sent_len), clamped  
         ldist = geom.Geometric(torch.full(labels.shape, self.len_probability, device=inputs.device)).sample()
-        ldist_trunc = torch.clamp(ldist, min=0.0, max=self.max_spanlen).float()
+        ldist_trunc = torch.clamp(ldist, min=0.0, max=self.max_spanlen).float() + torch.ones_like(ldist).float() # geom produces [0, inf), we want 1-8
         sent_len = labels.shape[1] # lengths of input sentences (could pass this to the constructor)
 
         nmask = math.ceil(sent_len * self.mlm_probability)    # number of total modifications expected
@@ -93,6 +94,7 @@ class AuxMLMModel(DistilBertPreTrainedModel):
         lengths = torch.where(cumul < (nmask + 1 / self.len_probability) , ldist_trunc, torch.Tensor([0.]).to(inputs.device)) # only consider lengths up to ~nmask
         nspans = torch.unsqueeze(torch.count_nonzero(lengths, dim = 1), dim =1) # number of spans in each sentence
         lengths = lengths[:, :torch.max(nspans)]              # truncate length tensor to max span length
+
 
         # randomly (uniformly) generate anchoring indices for each span length, get ending indices
         start_idxs = torch.ceil(torch.rand_like(lengths, dtype=float) * sent_len).float()

@@ -203,7 +203,7 @@ class Trainer():
     def train(self, model, train_dataloader, eval_dataloader, val_dict, model_type):
         device = self.device
         model.to(device)
-#        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
         distilbert_parameters = filter(lambda p: p.requires_grad,
                                        model.distilbert.parameters())
         qa_parameters = filter(lambda p: p.requires_grad,
@@ -222,7 +222,6 @@ class Trainer():
             self.log.info(f'Epoch: {epoch_num}')
             with torch.enable_grad(), tqdm(total=len(train_dataloader.dataset)) as progress_bar:
                 for batch in train_dataloader:
-
                     distilbert_optimizer.zero_grad()
                     qa_optimizer.zero_grad()
                     # optim.zero_grad()
@@ -232,11 +231,12 @@ class Trainer():
                     start_positions = batch['start_positions'].to(device)
                     end_positions = batch['end_positions'].to(device)
 
+                    # import pdb; pdb.set_trace()
                     if model_type == "auxmlm":
                         outputs = model(input_ids, attention_mask=attention_mask,
                                         start_positions=start_positions,
                                         end_positions=end_positions, decay_gamma=True,
-                                        mask_inputs=True)
+                                        mask_inputs=False) # TODO: change this back to false when using mask model
                     else:
                         outputs = model(input_ids, attention_mask=attention_mask,
                                         start_positions=start_positions,
@@ -244,7 +244,8 @@ class Trainer():
 
                     # sequential layer unfreezing depending on which epoch we're on
                     # TODO: also allow embedding layer to be frozen/unfrozen?
-                    if epoch_num < 1: # hard code this for now, may change later
+                    if epoch_num < 2: # hard code this for now, may change later
+                        # import pdb; pdb.set_trace()
                         distilbert_optimizer.zero_grad()
                     #elif epoch_num < 2:
                     #    model.distilbert.zero_grad()

@@ -149,6 +149,7 @@ class AuxMLMModel(DistilBertPreTrainedModel):
             sequence are not taken into account for computing the loss.
         """
 
+        # import pdb; pdb.set_trace()
         if mask_inputs:
             input_ids, mlm_labels = self.mlm_mask(input_ids) # mask inputs to both losses
         else:
@@ -220,7 +221,7 @@ class AuxMLMModel(DistilBertPreTrainedModel):
             total_loss = gamma_current * mlm_loss
         else:
             total_loss = qa_loss + gamma_current *  mlm_loss
-
+            
         output = (start_logits, end_logits, prediction_logits) + distilbert_output[1:]
 
         return ((total_loss,) + output) if total_loss is not None else output

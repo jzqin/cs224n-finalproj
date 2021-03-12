@@ -222,6 +222,8 @@ class Trainer():
             self.log.info(f'Epoch: {epoch_num}')
             with torch.enable_grad(), tqdm(total=len(train_dataloader.dataset)) as progress_bar:
                 for batch in train_dataloader:
+
+                    # import pdb; pdb.set_trace()
                     distilbert_optimizer.zero_grad()
                     qa_optimizer.zero_grad()
                     # optim.zero_grad()
@@ -236,24 +238,24 @@ class Trainer():
                         outputs = model(input_ids, attention_mask=attention_mask,
                                         start_positions=start_positions,
                                         end_positions=end_positions, decay_gamma=True,
-                                        mask_inputs=False) # TODO: change this back to false when using mask model
+                                        mask_inputs=True)
                     else:
                         outputs = model(input_ids, attention_mask=attention_mask,
                                         start_positions=start_positions,
                                         end_positions=end_positions) # db4qa base case
-
-                    # sequential layer unfreezing depending on which epoch we're on
-                    # TODO: also allow embedding layer to be frozen/unfrozen?
-                    if epoch_num < 2: # hard code this for now, may change later
-                        # import pdb; pdb.set_trace()
-                        distilbert_optimizer.zero_grad()
-                    #elif epoch_num < 2:
-                    #    model.distilbert.zero_grad()
                     
                     loss = outputs[0]
                     loss.backward()
-                    distilbert_optimizer.step()
-                    qa_optimizer.step()
+
+                    # sequential layer unfreezing depending on which epoch we're on
+                    # TODO: also allow embedding layer to be frozen/unfrozen?
+                    if epoch_num < 0: # hard code this for now, may change later
+                        # import pdb; pdb.set_trace()
+                        qa_optimizer.step()
+                    else:
+                        distilbert_optimizer.step()
+                        qa_optimizer.step()
+
                     # optim.step()
                     progress_bar.update(len(input_ids))
                     progress_bar.set_postfix(epoch=epoch_num, NLL=loss.item())

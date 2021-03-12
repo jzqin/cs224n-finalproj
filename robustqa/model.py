@@ -166,25 +166,6 @@ class AuxMLMModel(DistilBertPreTrainedModel):
 
         # The rest of the time (10% of the time) we keep the masked input tokens unchanged
         return inputs, labels
-
-        """
-        #15% of input tokens changed to something else.
-        #80% of these tokens are changed to [MASK] (focus on this first)
-        for i in rnp.random.choice(sent_length):
-            rand1 = random.random()
-            if (rand1 > 0.85):
-                rand2 = random.random()
-                if (rand2 > 0.2):
-                    input_ids[i] = mask_token
-                elif (rand2 > 0.1):
-                    # 10% of tokens changed to random other word
-                    input_ids[i] = random.randint(0, self.vocab_size - 1)
-                else:
-                    # 10% of tokens remain the same
-                    pass
-        
-        return input_ids
-        """
         
     def forward(
         self,
@@ -216,8 +197,6 @@ class AuxMLMModel(DistilBertPreTrainedModel):
             #input_ids, mlm_labels = self.mlm_mask(input_ids) # mask inputs to both losses
         else:
             mlm_labels = input_ids # we don't care about MLM if we are not masking inputs
-
-        self.span_mask(input_ids)
 
         # This is the result of DistilbertModel's forward method
         distilbert_output = self.distilbert(

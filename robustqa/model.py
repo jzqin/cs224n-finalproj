@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.distributions.geometric as geom
 from torch.nn import CrossEntropyLoss
 
 from transformers import DistilBertPreTrainedModel, DistilBertModel
@@ -33,6 +34,9 @@ class AuxMLMModel(DistilBertPreTrainedModel):
         self.init_weights()
 
         self.mlm_probability = 0.15 # this is default for BERT and RoBERTa
+        self.len_probability = 0.2 # span_length prob for geometric distribution
+        self.max_spanlen = 8 # length of largest acceptable span
+
         self.mlm_loss_fct = nn.CrossEntropyLoss()
 
         self.vocab_size = None
@@ -63,7 +67,71 @@ class AuxMLMModel(DistilBertPreTrainedModel):
     def add_vocab_size(self, vocab_size):
         # vocab should be a list of strings
         self.vocab_size = vocab_size
+    
+    # Roughly using SPANBert masking scheme https://arxiv.org/pdf/1907.10529.pdf
+    def span_mask(self, inputs):
+        if self.vocab_size is None:
+            raise AttributeError('AuxMLMModel must have vocabulary size added via add_vocab_size() before training occurs')
 
+        # from RoBERTa paper: https://github.com/huggingface/transformers/blob/master/src/transformers/data/data_collator.py#L356
+        labels = inputs.clone()
+
+        # detect tokens we should not mask
+        special_tokens_mask = torch.zeros_like(inputs, device=inputs.device)
+        special_tokens_mask[inputs == CLS_TOKEN] = 1 # which tokens can't be masked? [CLS], [SEP], [PAD]
+        special_tokens_mask[inputs == SEP_TOKEN] = 1
+        special_tokens_mask[inputs == PAD_TOKEN] = 1
+        special_tokens_mask = special_tokens_mask.bool()
+
+        #import pdb; pdb.set_trace()
+        # Get the largest geometric sample of span lengths (batch_size, sent_len), clamped  
+        ldist = geom.Geometric(torch.full(labels.shape, self.len_probability, device=inputs.device)).sample()
+        ldist_trunc = torch.clamp(ldist, min=0.0, max=self.max_spanlen).float() + torch.ones_like(ldist).float() # geom produces [0, inf), we want 1-8
+        sent_len = labels.shape[1] # lengths of input sentences (could pass this to the constructor)
+
+        nmask = math.ceil(sent_len * self.mlm_probability)    # number of total modifications expected
+        cumul = torch.cumsum(ldist_trunc, dim=1, dtype=float) # accumulate span lengths 
+        lengths = torch.where(cumul < (nmask + 1 / self.len_probability) , ldist_trunc, torch.Tensor([0.]).to(inputs.device)) # only consider lengths up to ~nmask
+        nspans = torch.unsqueeze(torch.count_nonzero(lengths, dim = 1), dim =1) # number of spans in each sentence
+        lengths = lengths[:, :torch.max(nspans)]              # truncate length tensor to max span length
+
+
+        # randomly (uniformly) generate anchoring indices for each span length, get ending indices
+        start_idxs = torch.ceil(torch.rand_like(lengths, dtype=float) * sent_len).float()
+        start_idxs = torch.where(lengths > 0., start_idxs, torch.Tensor([0.]).to(inputs.device)) # ignore indices with 0 length
+        end_idxs = start_idxs + lengths # calculate stop indices for each span
+        end_idxs = torch.clamp(end_idxs, min=0.0, max=sent_len) # clamp end indices 
+
+        masked_spans =  torch.bernoulli(torch.full(lengths.shape, 0.8, device=inputs.device)).bool() # spans that will use [MASK]
+        random_spans  = torch.bernoulli(torch.full(lengths.shape, 0.5, device=inputs.device)).bool() & ~masked_spans
+        masked_spans = masked_spans.int(); random_spans = random_spans.int()
+        masked_indices = torch.zeros_like(inputs, device=inputs.device, dtype=torch.int64) # initialize masks
+        random_indices = torch.zeros_like(inputs, device=inputs.device, dtype=torch.int64) # initialize randomized indices
+        increment = torch.ones_like(start_idxs).type(torch.LongTensor).to(inputs.device) # used to increment span indices
+        current_idxs = start_idxs
+
+        # fill in masking and randomized indices consecutively
+        for i in range(self.max_spanlen):
+            token_indices = torch.where(current_idxs < end_idxs, current_idxs, torch.Tensor([0.]).to(inputs.device)).type(torch.LongTensor).to(inputs.device)
+            masked_indices.scatter_(1, token_indices * masked_spans, increment) # we scatter from a tensor of all 1s
+            random_indices.scatter_(1, token_indices * random_spans, increment)
+            current_idxs += increment
+        
+        # prevent masking protected tokens and convert to boolean tensors
+        masked_indices.masked_fill_(special_tokens_mask, value=0)
+        random_indices.masked_fill_(special_tokens_mask, value=0)
+        masked_indices = masked_indices.bool()
+        random_indices = random_indices.bool()
+
+        # mask inputs and labels
+        labels[~(masked_indices | random_indices)] = -100
+        random_words = torch.randint(self.vocab_size, labels.shape, dtype=torch.long, device=inputs.device)
+        inputs[masked_indices] = self.mask_token
+        inputs[random_indices] = random_words[random_indices]
+
+        return inputs, labels
+        
+   
     # Synchronous masking for MLM task
     def mlm_mask(self, inputs):
         # random.seed(0)
@@ -98,25 +166,6 @@ class AuxMLMModel(DistilBertPreTrainedModel):
 
         # The rest of the time (10% of the time) we keep the masked input tokens unchanged
         return inputs, labels
-
-        """
-        #15% of input tokens changed to something else.
-        #80% of these tokens are changed to [MASK] (focus on this first)
-        for i in range(len(input_ids)): # TODO input_ids with batched shape
-            rand1 = random.random()
-            if (rand1 > 0.85):
-                rand2 = random.random()
-                if (rand2 > 0.2):
-                    input_ids[i] = mask_token
-                elif (rand2 > 0.1):
-                    # 10% of tokens changed to random other word
-                    input_ids[i] = random.randint(0, self.vocab_size - 1)
-                else:
-                    # 10% of tokens remain the same
-                    pass
-        
-        return input_ids
-        """
         
     def forward(
         self,
@@ -144,7 +193,8 @@ class AuxMLMModel(DistilBertPreTrainedModel):
         """
 
         if mask_inputs:
-            input_ids, mlm_labels = self.mlm_mask(input_ids) # mask inputs to both losses
+            input_ids, mlm_labels = self.span_mask(input_ids)
+            #input_ids, mlm_labels = self.mlm_mask(input_ids) # mask inputs to both losses
         else:
             mlm_labels = input_ids # we don't care about MLM if we are not masking inputs
 

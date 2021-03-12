@@ -10,6 +10,8 @@ def get_train_test_args():
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--save-dir', type=str, default='save/')
     parser.add_argument('--load-dir', type=str) # added to load model weights
+    parser.add_argument('--gamma-init', type=float) # added for gamma initial
+    parser.add_argument('--gamma-end', type=float) # added for the final gamma
     parser.add_argument('--train', action='store_true')
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--train-datasets', type=str, default='squad,nat_questions,newsqa')

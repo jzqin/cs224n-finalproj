@@ -249,7 +249,7 @@ class Trainer():
 
                     # sequential layer unfreezing depending on which epoch we're on
                     # TODO: also allow embedding layer to be frozen/unfrozen?
-                    if epoch_num < 0: # hard code this for now, may change later
+                    if epoch_num < 5: # hard code this for now, may change later
                         # import pdb; pdb.set_trace()
                         qa_optimizer.step()
                     else:

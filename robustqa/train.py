@@ -219,6 +219,7 @@ class Trainer():
         tbx = SummaryWriter(self.save_dir)
 
         for epoch_num in range(self.num_epochs):
+            # import pdb; pdb.set_trace()
             self.log.info(f'Epoch: {epoch_num}')
             with torch.enable_grad(), tqdm(total=len(train_dataloader.dataset)) as progress_bar:
                 for batch in train_dataloader:
@@ -235,10 +236,17 @@ class Trainer():
 
                     # import pdb; pdb.set_trace()
                     if model_type == "auxmlm":
-                        outputs = model(input_ids, attention_mask=attention_mask,
-                                        start_positions=start_positions,
-                                        end_positions=end_positions, decay_gamma=True,
-                                        mask_inputs=True)
+                        if epoch_num < 20:
+                            outputs = model(input_ids, attention_mask=attention_mask,
+                                            start_positions=start_positions,
+                                            end_positions=end_positions, decay_gamma=False,
+                                            mask_inputs=False)
+                        else:
+                            outputs = model(input_ids, attention_mask=attention_mask,
+                                            start_positions=start_positions,
+                                            end_positions=end_positions, decay_gamma=True,
+                                            mask_inputs=True)
+
                     else:
                         outputs = model(input_ids, attention_mask=attention_mask,
                                         start_positions=start_positions,
@@ -354,9 +362,9 @@ def main():
         if args.model == 'auxmlm':
             gamma_start = args.gamma_init # hard-code for now
             gamma_end   = args.gamma_end
-            n_steps = args.num_epochs * len(train_loader) # is this the correct number of batches per epoch?
+            n_steps = (args.num_epochs) * len(train_loader) # is this the correct number of batches per epoch?
             gammas = get_gammas(gamma_start, gamma_end, n_steps, "linear")
-            #model.set_gammas(gammas)
+            model.set_gammas(gammas)
 
         best_scores = trainer.train(model, train_loader, val_loader, val_dict, args.model)
 

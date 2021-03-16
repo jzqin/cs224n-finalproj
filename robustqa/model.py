@@ -41,7 +41,7 @@ class AuxMLMModel(DistilBertPreTrainedModel):
 
         self.mlm_probability = 0.15 # this is default for BERT and RoBERTa
         self.len_probability = 0.2 # span_length prob for geometric distribution
-        self.max_spanlen = 8 # length of largest acceptable span
+        self.max_spanlen = 2 # length of largest acceptable span
 
         self.mlm_loss_fct = nn.CrossEntropyLoss()
 
@@ -251,10 +251,10 @@ class AuxMLMModel(DistilBertPreTrainedModel):
             qa_end_loss = loss_fct(end_logits, end_positions)
             qa_loss = (qa_start_loss + qa_end_loss) / 2
 
-        # Compute Cross-Entropy Loss from MLM
+        # Compute Cross-Entropy Loss from MLM, but only if we are actually masking inputs
         # note: CrossEntropyLoss automatically ignores all positions with value -100
-        mlm_loss = None
-        if mlm_labels is not None:
+        mlm_loss = 0
+        if mask_inputs:
             mlm_loss = self.mlm_loss_fct(prediction_logits.view(-1, prediction_logits.size(-1)), mlm_labels.view(-1))
 
         # check that global_idx does not exceed size of gammas
@@ -266,7 +266,7 @@ class AuxMLMModel(DistilBertPreTrainedModel):
         if decay_gamma:
             self.gamma_idx += 1
 
-        # compute total loss
+        # compute total loss        
         if qa_loss is None:
             total_loss = gamma_current * mlm_loss
         else:
